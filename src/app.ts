@@ -9,6 +9,7 @@ import { logger } from './lib/logger.js';
 import { prisma } from './lib/prisma.js';
 import { redis } from './lib/redis.js';
 import { errorHandler } from './middlewares/errorHandler.js';
+import { authRoutes } from './modules/auth/routes.js';
 
 const PING_TIMEOUT_MS = 1_500;
 
@@ -64,8 +65,10 @@ export async function buildApp() {
     return { status: 'ok', services: { postgres, redis: redisStatus } };
   });
 
-  // Domain modules (auth, workspaces, documents, api-keys, delivery) register
-  // their routes here as they land — see ROADMAP.md.
+  await app.register(authRoutes, { prefix: '/api/v1/auth' });
+
+  // Remaining domain modules (documents, api-keys, delivery) register their
+  // routes here as they land — see ROADMAP.md.
 
   return app;
 }
