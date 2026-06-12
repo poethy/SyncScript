@@ -6,6 +6,7 @@ import { prisma } from '../lib/prisma.js';
 import { verifyAccessToken } from '../modules/auth/tokens.js';
 import { DocSessionManager } from './docSession.js';
 import { DebouncedFlusher } from './persistence.js';
+import { publishDocUpdate, subscribeDocUpdates } from './pubsub.js';
 import {
   docJoinPayload,
   docLeavePayload,
@@ -53,6 +54,24 @@ export function attachRealtimeGateway(httpServer: HttpServer): RealtimeServer {
   // When the last client leaves a document, flush immediately before the
   // session is destroyed — nothing dirty ever waits on an empty room.
   const sessions = new DocSessionManager((session) => flusher.flush(session));
+
+  // Updates from sibling instances: apply to the local session (if one is
+  // active) and forward to local sockets. The originating instance owns the
+  // flush, so remote updates do not mark the session dirty.
+  subscribeDocUpdates((documentId, update) => {
+    void (async () => {
+      const session = await sessions.get(documentId);
+      if (session) {
+        try {
+          Y.applyUpdate(session.doc, update);
+        } catch (err) {
+          logger.warn({ err, documentId }, 'rejected malformed remote update');
+          return;
+        }
+      }
+      io.to(docRoom(documentId)).emit('doc:update', { documentId, update });
+    })();
+  });
 
   // JWT handshake: clients pass their access token as `auth.token` when
   // connecting; unauthenticated sockets never reach the connection handler.
@@ -237,5 +256,6 @@ async function handleUpdate(
   session.dirty = true;
   flusher.schedule(session);
   socket.to(docRoom(documentId)).emit('doc:update', { documentId, update });
+  void publishDocUpdate(documentId, update);
   ack?.({ ok: true });
 }
