@@ -10,6 +10,7 @@ import { prisma } from './lib/prisma.js';
 import { redis } from './lib/redis.js';
 import { errorHandler } from './middlewares/errorHandler.js';
 import { authRoutes } from './modules/auth/routes.js';
+import { workspaceRoutes } from './modules/workspaces/routes.js';
 
 const PING_TIMEOUT_MS = 1_500;
 
@@ -68,6 +69,7 @@ export async function buildApp() {
   });
 
   await app.register(authRoutes, { prefix: '/api/v1/auth' });
+  await app.register(workspaceRoutes, { prefix: '/api/v1/workspaces' });
 
   // Remaining domain modules (documents, api-keys, delivery) register their
   // routes here as they land — see ROADMAP.md.
