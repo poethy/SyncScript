@@ -1,5 +1,6 @@
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../middlewares/errorHandler.js';
+import { evictDocument } from '../delivery/cache.js';
 import type { Document, Prisma } from '../../generated/prisma/client.js';
 import type {
   CreateDocumentInput,
@@ -191,11 +192,15 @@ export async function updateDocument(
   }
 
   const updated = await prisma.document.update({ where: { id: documentId }, data });
+  await evictDocument(documentId);
   return { ...toReply(updated), workspaceId: updated.workspaceId, content: updated.content };
 }
 
 export async function deleteDocument(workspaceId: string, documentId: string): Promise<void> {
   await findInWorkspace(workspaceId, documentId);
-  // The parentId self-relation cascades, removing the entire sub-tree.
+  // Capture the sub-tree before the cascade removes it, then evict every
+  // affected delivery cache entry.
+  const subtreeIds = await getSubtreeIds(documentId);
   await prisma.document.delete({ where: { id: documentId } });
+  await Promise.all(subtreeIds.map((id) => evictDocument(id)));
 }
