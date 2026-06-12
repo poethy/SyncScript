@@ -1,17 +1,22 @@
 import type { Server as HttpServer } from 'node:http';
 import { Server, type Socket } from 'socket.io';
+import * as Y from 'yjs';
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
 import { verifyAccessToken } from '../modules/auth/tokens.js';
+import { DocSessionManager } from './docSession.js';
 import {
   docJoinPayload,
   docLeavePayload,
   docRoom,
+  docSyncPayload,
+  docUpdatePayload,
   type Ack,
   type ClientToServerEvents,
   type JoinAck,
   type ServerToClientEvents,
   type SocketData,
+  type SyncAck,
 } from './protocol.js';
 
 export type RealtimeServer = Server<
@@ -43,6 +48,10 @@ export function attachRealtimeGateway(httpServer: HttpServer): RealtimeServer {
     maxHttpBufferSize: 2 * 1024 * 1024,
   });
 
+  // Teardown becomes the debounced flusher's final flush in the persistence
+  // layer; until then sessions are simply discarded when the room empties.
+  const sessions = new DocSessionManager(() => Promise.resolve());
+
   // JWT handshake: clients pass their access token as `auth.token` when
   // connecting; unauthenticated sockets never reach the connection handler.
   io.use((socket, next) => {
@@ -64,13 +73,16 @@ export function attachRealtimeGateway(httpServer: HttpServer): RealtimeServer {
   io.on('connection', (socket) => {
     logger.info({ socketId: socket.id, userId: socket.data.user.id }, 'realtime client connected');
 
-    socket.on('doc:join', (raw, ack) => void handleJoin(io, socket, raw, ack));
-    socket.on('doc:leave', (raw, ack) => void handleLeave(io, socket, raw, ack));
+    socket.on('doc:join', (raw, ack) => void handleJoin(io, socket, sessions, raw, ack));
+    socket.on('doc:leave', (raw, ack) => void handleLeave(io, socket, sessions, raw, ack));
+    socket.on('doc:sync', (raw, ack) => void handleSync(socket, sessions, raw, ack));
+    socket.on('doc:update', (raw, ack) => void handleUpdate(socket, sessions, raw, ack));
 
     // 'disconnecting' (not 'disconnect') so the socket's rooms are still known.
     socket.on('disconnecting', () => {
       for (const documentId of socket.data.docRoles.keys()) {
         emitPresence(io, documentId, socket.id);
+        void sessions.release(documentId, socket.id);
       }
     });
 
@@ -85,6 +97,7 @@ export function attachRealtimeGateway(httpServer: HttpServer): RealtimeServer {
 async function handleJoin(
   io: RealtimeServer,
   socket: RealtimeSocket,
+  sessions: DocSessionManager,
   raw: unknown,
   ack?: (result: JoinAck) => void,
 ): Promise<void> {
@@ -114,6 +127,7 @@ async function handleJoin(
       return;
     }
 
+    await sessions.acquire(documentId, socket.id);
     socket.data.docRoles.set(documentId, membership.role);
     await socket.join(docRoom(documentId));
     emitPresence(io, documentId);
@@ -127,6 +141,7 @@ async function handleJoin(
 async function handleLeave(
   io: RealtimeServer,
   socket: RealtimeSocket,
+  sessions: DocSessionManager,
   raw: unknown,
   ack?: (result: Ack) => void,
 ): Promise<void> {
@@ -139,6 +154,84 @@ async function handleLeave(
 
   socket.data.docRoles.delete(documentId);
   await socket.leave(docRoom(documentId));
+  await sessions.release(documentId, socket.id);
   emitPresence(io, documentId);
+  ack?.({ ok: true });
+}
+
+/**
+ * Yjs sync handshake: the client sends its state vector and receives the
+ * diff it is missing plus the server's state vector; it then answers with a
+ * doc:update containing whatever the server is missing. A client without
+ * local state omits the vector and receives the full document.
+ */
+async function handleSync(
+  socket: RealtimeSocket,
+  sessions: DocSessionManager,
+  raw: unknown,
+  ack?: (result: SyncAck) => void,
+): Promise<void> {
+  const parsed = docSyncPayload.safeParse(raw);
+  if (!parsed.success) {
+    ack?.({ ok: false, error: 'INVALID_PAYLOAD' });
+    return;
+  }
+  const { documentId, stateVector } = parsed.data;
+
+  if (!socket.data.docRoles.has(documentId)) {
+    ack?.({ ok: false, error: 'NOT_JOINED' });
+    return;
+  }
+  const session = await sessions.get(documentId);
+  if (!session) {
+    ack?.({ ok: false, error: 'NOT_JOINED' });
+    return;
+  }
+
+  ack?.({
+    ok: true,
+    update: Y.encodeStateAsUpdate(session.doc, stateVector),
+    stateVector: Y.encodeStateVector(session.doc),
+  });
+}
+
+async function handleUpdate(
+  socket: RealtimeSocket,
+  sessions: DocSessionManager,
+  raw: unknown,
+  ack?: (result: Ack) => void,
+): Promise<void> {
+  const parsed = docUpdatePayload.safeParse(raw);
+  if (!parsed.success) {
+    ack?.({ ok: false, error: 'INVALID_PAYLOAD' });
+    return;
+  }
+  const { documentId, update } = parsed.data;
+
+  const role = socket.data.docRoles.get(documentId);
+  if (!role) {
+    ack?.({ ok: false, error: 'NOT_JOINED' });
+    return;
+  }
+  if (role === 'VIEWER') {
+    ack?.({ ok: false, error: 'FORBIDDEN' });
+    return;
+  }
+  const session = await sessions.get(documentId);
+  if (!session) {
+    ack?.({ ok: false, error: 'NOT_JOINED' });
+    return;
+  }
+
+  try {
+    Y.applyUpdate(session.doc, update);
+  } catch (err) {
+    logger.warn({ err, documentId }, 'rejected malformed yjs update');
+    ack?.({ ok: false, error: 'MALFORMED_UPDATE' });
+    return;
+  }
+
+  session.dirty = true;
+  socket.to(docRoom(documentId)).emit('doc:update', { documentId, update });
   ack?.({ ok: true });
 }
