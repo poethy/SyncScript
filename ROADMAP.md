@@ -88,7 +88,7 @@ flowchart LR
 17. `feat(delivery): redis caching with flush-driven invalidation`
 18. `feat(delivery): token bucket rate limiting via redis lua script`
 
-### Phase 5 — Hardening
+### Phase 5 — Hardening ✅
 19. `test: integration test suite for auth, rbac and delivery`
 20. `ci: add github actions workflow for lint, typecheck and tests`
 21. `docs: comprehensive readme with architecture diagrams`
