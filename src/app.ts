@@ -9,6 +9,9 @@ import { logger } from './lib/logger.js';
 import { prisma } from './lib/prisma.js';
 import { redis } from './lib/redis.js';
 import { errorHandler } from './middlewares/errorHandler.js';
+import { authRoutes } from './modules/auth/routes.js';
+import { workspaceRoutes } from './modules/workspaces/routes.js';
+import { documentRoutes } from './modules/documents/routes.js';
 
 const PING_TIMEOUT_MS = 1_500;
 
@@ -56,6 +59,9 @@ export async function buildApp() {
 
   await app.register(cors, { origin: true });
 
+  app.decorateRequest('user', null);
+  app.decorateRequest('membership', null);
+
   // Liveness + dependency visibility. Always 200 so orchestrators don't kill
   // the process over a flapping dependency; readiness gating can key off the
   // individual service statuses.
@@ -64,8 +70,12 @@ export async function buildApp() {
     return { status: 'ok', services: { postgres, redis: redisStatus } };
   });
 
-  // Domain modules (auth, workspaces, documents, api-keys, delivery) register
-  // their routes here as they land — see ROADMAP.md.
+  await app.register(authRoutes, { prefix: '/api/v1/auth' });
+  await app.register(workspaceRoutes, { prefix: '/api/v1/workspaces' });
+  await app.register(documentRoutes, { prefix: '/api/v1/workspaces/:workspaceId/documents' });
+
+  // Remaining domain modules (documents, api-keys, delivery) register their
+  // routes here as they land — see ROADMAP.md.
 
   return app;
 }

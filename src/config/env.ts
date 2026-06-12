@@ -1,5 +1,9 @@
 import 'dotenv/config';
 import { z } from 'zod';
+import { DURATION_PATTERN } from '../utils/duration.js';
+
+const duration = (def: string) =>
+  z.string().regex(DURATION_PATTERN, 'expected a duration like "15m" or "30d"').default(def);
 
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -11,8 +15,8 @@ export const envSchema = z.object({
 
   JWT_ACCESS_SECRET: z.string().min(16),
   JWT_REFRESH_SECRET: z.string().min(16),
-  JWT_ACCESS_TTL: z.string().default('15m'),
-  JWT_REFRESH_TTL: z.string().default('30d'),
+  JWT_ACCESS_TTL: duration('15m'),
+  JWT_REFRESH_TTL: duration('30d'),
 });
 
 export type Env = z.infer<typeof envSchema>;

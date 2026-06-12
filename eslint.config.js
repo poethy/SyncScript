@@ -22,5 +22,13 @@ export default tseslint.config(
       '@typescript-eslint/consistent-type-imports': 'error',
     },
   },
+  {
+    // Fastify plugins must be async functions even when they register routes
+    // without awaiting anything.
+    files: ['src/modules/**/routes.ts'],
+    rules: {
+      '@typescript-eslint/require-await': 'off',
+    },
+  },
   prettier,
 );

@@ -15,6 +15,9 @@ src/generated/prisma
 # Test artifacts
 coverage
 
+# Local agent instructions
+CLAUDE.md
+
 # Logs & OS noise
 *.log
 .DS_Store
