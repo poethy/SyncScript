@@ -1,24 +1,144 @@
 import type { Server as HttpServer } from 'node:http';
-import { Server } from 'socket.io';
+import { Server, type Socket } from 'socket.io';
 import { logger } from '../lib/logger.js';
+import { prisma } from '../lib/prisma.js';
+import { verifyAccessToken } from '../modules/auth/tokens.js';
+import {
+  docJoinPayload,
+  docLeavePayload,
+  docRoom,
+  type Ack,
+  type ClientToServerEvents,
+  type JoinAck,
+  type ServerToClientEvents,
+  type SocketData,
+} from './protocol.js';
 
-// Realtime gateway skeleton. Phase 3 (see ROADMAP.md) adds:
-//  - JWT handshake middleware
-//  - per-document rooms with RBAC checks on join
-//  - Yjs sync protocol (sync step 1/2 + incremental updates as binary events)
-//  - debounced persistence flusher and Redis pub/sub fan-out
-export function attachRealtimeGateway(httpServer: HttpServer): Server {
-  const io = new Server(httpServer, {
+export type RealtimeServer = Server<
+  ClientToServerEvents,
+  ServerToClientEvents,
+  Record<string, never>,
+  SocketData
+>;
+
+type RealtimeSocket = Socket<
+  ClientToServerEvents,
+  ServerToClientEvents,
+  Record<string, never>,
+  SocketData
+>;
+
+function emitPresence(io: RealtimeServer, documentId: string, leavingSocketId?: string): void {
+  const room = io.sockets.adapter.rooms.get(docRoom(documentId));
+  let connections = room?.size ?? 0;
+  if (leavingSocketId && room?.has(leavingSocketId)) connections -= 1;
+  io.to(docRoom(documentId)).emit('doc:presence', { documentId, connections });
+}
+
+export function attachRealtimeGateway(httpServer: HttpServer): RealtimeServer {
+  const io: RealtimeServer = new Server(httpServer, {
     serveClient: false,
     cors: { origin: true },
+    // Yjs updates are binary and small; cap frames well below default limits.
+    maxHttpBufferSize: 2 * 1024 * 1024,
+  });
+
+  // JWT handshake: clients pass their access token as `auth.token` when
+  // connecting; unauthenticated sockets never reach the connection handler.
+  io.use((socket, next) => {
+    const token: unknown = socket.handshake.auth['token'];
+    if (typeof token !== 'string' || token.length === 0) {
+      next(new Error('Missing auth token'));
+      return;
+    }
+    try {
+      const payload = verifyAccessToken(token);
+      socket.data.user = { id: payload.sub, email: payload.email };
+      socket.data.docRoles = new Map();
+      next();
+    } catch {
+      next(new Error('Invalid or expired access token'));
+    }
   });
 
   io.on('connection', (socket) => {
-    logger.info({ socketId: socket.id }, 'realtime client connected');
+    logger.info({ socketId: socket.id, userId: socket.data.user.id }, 'realtime client connected');
+
+    socket.on('doc:join', (raw, ack) => void handleJoin(io, socket, raw, ack));
+    socket.on('doc:leave', (raw, ack) => void handleLeave(io, socket, raw, ack));
+
+    // 'disconnecting' (not 'disconnect') so the socket's rooms are still known.
+    socket.on('disconnecting', () => {
+      for (const documentId of socket.data.docRoles.keys()) {
+        emitPresence(io, documentId, socket.id);
+      }
+    });
+
     socket.on('disconnect', (reason) => {
       logger.info({ socketId: socket.id, reason }, 'realtime client disconnected');
     });
   });
 
   return io;
+}
+
+async function handleJoin(
+  io: RealtimeServer,
+  socket: RealtimeSocket,
+  raw: unknown,
+  ack?: (result: JoinAck) => void,
+): Promise<void> {
+  const parsed = docJoinPayload.safeParse(raw);
+  if (!parsed.success) {
+    ack?.({ ok: false, error: 'INVALID_PAYLOAD' });
+    return;
+  }
+  const { documentId } = parsed.data;
+
+  try {
+    const doc = await prisma.document.findUnique({
+      where: { id: documentId },
+      select: { workspaceId: true },
+    });
+    const membership =
+      doc &&
+      (await prisma.workspaceMembership.findUnique({
+        where: {
+          workspaceId_userId: { workspaceId: doc.workspaceId, userId: socket.data.user.id },
+        },
+      }));
+    // Same shape for "no document" and "no membership" so existence of
+    // documents outside the caller's workspaces is not revealed.
+    if (!membership) {
+      ack?.({ ok: false, error: 'DOCUMENT_NOT_FOUND' });
+      return;
+    }
+
+    socket.data.docRoles.set(documentId, membership.role);
+    await socket.join(docRoom(documentId));
+    emitPresence(io, documentId);
+    ack?.({ ok: true, role: membership.role });
+  } catch (err) {
+    logger.error({ err, documentId }, 'doc:join failed');
+    ack?.({ ok: false, error: 'INTERNAL_ERROR' });
+  }
+}
+
+async function handleLeave(
+  io: RealtimeServer,
+  socket: RealtimeSocket,
+  raw: unknown,
+  ack?: (result: Ack) => void,
+): Promise<void> {
+  const parsed = docLeavePayload.safeParse(raw);
+  if (!parsed.success) {
+    ack?.({ ok: false, error: 'INVALID_PAYLOAD' });
+    return;
+  }
+  const { documentId } = parsed.data;
+
+  socket.data.docRoles.delete(documentId);
+  await socket.leave(docRoom(documentId));
+  emitPresence(io, documentId);
+  ack?.({ ok: true });
 }
