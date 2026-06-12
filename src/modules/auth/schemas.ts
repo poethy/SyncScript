@@ -28,6 +28,10 @@ export const authReply = z.object({
   }),
 });
 
+export const refreshBody = z.object({
+  refreshToken: z.string().min(1),
+});
+
 export type RegisterInput = z.infer<typeof registerBody>;
 export type LoginInput = z.infer<typeof loginBody>;
 export type PublicUser = z.infer<typeof publicUser>;

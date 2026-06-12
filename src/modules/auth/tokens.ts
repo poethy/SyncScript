@@ -20,6 +20,16 @@ export function signAccessToken(user: { id: string; email: string }): {
   return { token, expiresInSeconds };
 }
 
+export function verifyAccessToken(token: string): AccessTokenPayload {
+  const payload = jwt.verify(token, env.JWT_ACCESS_SECRET);
+  if (typeof payload === 'string') throw new Error('Malformed access token payload');
+  const claims = payload as Record<string, unknown>;
+  if (typeof claims['sub'] !== 'string' || typeof claims['email'] !== 'string') {
+    throw new Error('Malformed access token payload');
+  }
+  return { sub: claims['sub'], email: claims['email'] };
+}
+
 // Refresh tokens are opaque 256-bit secrets, never JWTs: they are persisted
 // (hashed) so they can be rotated and revoked. Only an HMAC of the token is
 // stored, so a database leak alone cannot be replayed.

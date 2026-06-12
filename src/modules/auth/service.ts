@@ -1,7 +1,7 @@
 import argon2 from 'argon2';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../middlewares/errorHandler.js';
-import { generateRefreshToken, signAccessToken } from './tokens.js';
+import { generateRefreshToken, hashRefreshToken, signAccessToken } from './tokens.js';
 import type { AuthReply, LoginInput, PublicUser, RegisterInput } from './schemas.js';
 
 const publicUserSelect = { id: true, email: true, name: true, avatarUrl: true } as const;
@@ -45,4 +45,51 @@ export async function login(input: LoginInput): Promise<AuthReply> {
 
   const { id, email, name, avatarUrl } = user;
   return { user: { id, email, name, avatarUrl }, tokens: await issueTokens(user) };
+}
+
+export async function rotateRefreshToken(rawToken: string): Promise<AuthReply> {
+  const stored = await prisma.refreshToken.findUnique({
+    where: { tokenHash: hashRefreshToken(rawToken) },
+    include: { user: { select: publicUserSelect } },
+  });
+
+  if (!stored) {
+    throw new AppError(401, 'Invalid refresh token', 'INVALID_REFRESH_TOKEN');
+  }
+
+  if (stored.revokedAt) {
+    // A rotated token came back: assume the credential family is compromised
+    // and revoke every active session for this user.
+    await prisma.refreshToken.updateMany({
+      where: { userId: stored.userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    throw new AppError(401, 'Refresh token reuse detected', 'REFRESH_TOKEN_REUSED');
+  }
+
+  if (stored.expiresAt < new Date()) {
+    throw new AppError(401, 'Refresh token expired', 'REFRESH_TOKEN_EXPIRED');
+  }
+
+  await prisma.refreshToken.update({
+    where: { id: stored.id },
+    data: { revokedAt: new Date() },
+  });
+
+  return { user: stored.user, tokens: await issueTokens(stored.user) };
+}
+
+export async function logout(rawToken: string): Promise<void> {
+  await prisma.refreshToken.updateMany({
+    where: { tokenHash: hashRefreshToken(rawToken), revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+}
+
+export async function getMe(userId: string): Promise<PublicUser> {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: publicUserSelect });
+  if (!user) {
+    throw new AppError(401, 'Account no longer exists', 'UNAUTHORIZED');
+  }
+  return user;
 }

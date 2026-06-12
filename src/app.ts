@@ -57,6 +57,8 @@ export async function buildApp() {
 
   await app.register(cors, { origin: true });
 
+  app.decorateRequest('user', null);
+
   // Liveness + dependency visibility. Always 200 so orchestrators don't kill
   // the process over a flapping dependency; readiness gating can key off the
   // individual service statuses.
