@@ -82,7 +82,7 @@ flowchart LR
 13. `feat(realtime): debounced postgres persistence with snapshot derivation`
 14. `feat(realtime): redis pub/sub for multi-instance update fan-out`
 
-### Phase 4 — Developer Platform
+### Phase 4 — Developer Platform ✅
 15. `feat(api-keys): scoped api key management with hashed storage`
 16. `feat(delivery): public document delivery endpoint with api key auth`
 17. `feat(delivery): redis caching with flush-driven invalidation`
