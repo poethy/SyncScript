@@ -72,7 +72,7 @@ flowchart LR
 7. `feat(workspaces): workspace crud with membership management`
 8. `feat(workspaces): role-based access control middleware`
 
-### Phase 2 — Documents
+### Phase 2 — Documents ✅
 9. `feat(documents): nested document crud with tree queries`
 10. `feat(documents): sub-tree resolution via recursive cte`
 
