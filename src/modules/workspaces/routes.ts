@@ -1,5 +1,6 @@
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { authenticate } from '../../middlewares/authenticate.js';
+import { requireWorkspaceRole } from '../../middlewares/rbac.js';
 import {
   addMemberBody,
   createWorkspaceBody,
@@ -35,14 +36,18 @@ export const workspaceRoutes: FastifyPluginAsyncZod = async (app) => {
 
   app.get(
     '/:workspaceId',
-    { schema: { params: workspaceParams, response: { 200: workspaceReply } } },
+    {
+      preHandler: [requireWorkspaceRole('VIEWER')],
+      schema: { params: workspaceParams, response: { 200: workspaceReply } },
+    },
     async (request) =>
-      workspaceService.getWorkspace(request.params.workspaceId, request.user!.id),
+      workspaceService.getWorkspace(request.params.workspaceId, request.membership!.role),
   );
 
   app.patch(
     '/:workspaceId',
     {
+      preHandler: [requireWorkspaceRole('OWNER')],
       schema: {
         params: workspaceParams,
         body: updateWorkspaceBody,
@@ -50,38 +55,36 @@ export const workspaceRoutes: FastifyPluginAsyncZod = async (app) => {
       },
     },
     async (request) =>
-      workspaceService.updateWorkspace(
-        request.params.workspaceId,
-        request.user!.id,
-        request.body.name,
-      ),
+      workspaceService.updateWorkspace(request.params.workspaceId, request.body.name),
   );
 
   app.delete(
     '/:workspaceId',
-    { schema: { params: workspaceParams } },
+    { preHandler: [requireWorkspaceRole('OWNER')], schema: { params: workspaceParams } },
     async (request, reply) => {
-      await workspaceService.deleteWorkspace(request.params.workspaceId, request.user!.id);
+      await workspaceService.deleteWorkspace(request.params.workspaceId);
       return reply.status(204).send();
     },
   );
 
   app.get(
     '/:workspaceId/members',
-    { schema: { params: workspaceParams, response: { 200: memberListReply } } },
-    async (request) =>
-      workspaceService.listMembers(request.params.workspaceId, request.user!.id),
+    {
+      preHandler: [requireWorkspaceRole('VIEWER')],
+      schema: { params: workspaceParams, response: { 200: memberListReply } },
+    },
+    async (request) => workspaceService.listMembers(request.params.workspaceId),
   );
 
   app.post(
     '/:workspaceId/members',
     {
+      preHandler: [requireWorkspaceRole('OWNER')],
       schema: { params: workspaceParams, body: addMemberBody, response: { 201: memberReply } },
     },
     async (request, reply) => {
       const member = await workspaceService.addMember(
         request.params.workspaceId,
-        request.user!.id,
         request.body.email,
         request.body.role,
       );
@@ -91,11 +94,13 @@ export const workspaceRoutes: FastifyPluginAsyncZod = async (app) => {
 
   app.patch(
     '/:workspaceId/members/:userId',
-    { schema: { params: memberParams, body: updateMemberBody, response: { 200: memberReply } } },
+    {
+      preHandler: [requireWorkspaceRole('OWNER')],
+      schema: { params: memberParams, body: updateMemberBody, response: { 200: memberReply } },
+    },
     async (request) =>
       workspaceService.updateMemberRole(
         request.params.workspaceId,
-        request.user!.id,
         request.params.userId,
         request.body.role,
       ),
@@ -103,11 +108,16 @@ export const workspaceRoutes: FastifyPluginAsyncZod = async (app) => {
 
   app.delete(
     '/:workspaceId/members/:userId',
-    { schema: { params: memberParams } },
+    {
+      // VIEWER floor: any member may hit this to leave; the service enforces
+      // that removing someone else requires OWNER.
+      preHandler: [requireWorkspaceRole('VIEWER')],
+      schema: { params: memberParams },
+    },
     async (request, reply) => {
       await workspaceService.removeMember(
         request.params.workspaceId,
-        request.user!.id,
+        request.membership!,
         request.params.userId,
       );
       return reply.status(204).send();

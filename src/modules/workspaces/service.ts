@@ -1,25 +1,12 @@
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../middlewares/errorHandler.js';
 import { uniqueSlug } from '../../utils/slug.js';
-import type { WorkspaceRole } from '../../generated/prisma/client.js';
+import type { WorkspaceMembership, WorkspaceRole } from '../../generated/prisma/client.js';
 import type { MemberReply, WorkspaceReply } from './schemas.js';
 
-const ROLE_RANK: Record<WorkspaceRole, number> = { VIEWER: 0, EDITOR: 1, OWNER: 2 };
-
-// Non-members get 404 (not 403) so responses do not reveal that a workspace
-// with this id exists.
-async function requireMembership(workspaceId: string, userId: string, minRole: WorkspaceRole = 'VIEWER') {
-  const membership = await prisma.workspaceMembership.findUnique({
-    where: { workspaceId_userId: { workspaceId, userId } },
-  });
-  if (!membership) {
-    throw new AppError(404, 'Workspace not found', 'NOT_FOUND');
-  }
-  if (ROLE_RANK[membership.role] < ROLE_RANK[minRole]) {
-    throw new AppError(403, 'Insufficient permissions for this action', 'FORBIDDEN');
-  }
-  return membership;
-}
+// Access control (membership + minimum role) is enforced by the
+// requireWorkspaceRole preHandler before any of these run; this service only
+// guards business invariants such as the last-owner rule.
 
 async function ownerCount(workspaceId: string): Promise<number> {
   return prisma.workspaceMembership.count({ where: { workspaceId, role: 'OWNER' } });
@@ -54,44 +41,39 @@ export async function listWorkspaces(userId: string): Promise<WorkspaceReply[]> 
   }));
 }
 
-export async function getWorkspace(workspaceId: string, userId: string): Promise<WorkspaceReply> {
-  const membership = await requireMembership(workspaceId, userId);
+export async function getWorkspace(
+  workspaceId: string,
+  requesterRole: WorkspaceRole,
+): Promise<WorkspaceReply> {
   const workspace = await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId } });
   return {
     id: workspace.id,
     name: workspace.name,
     slug: workspace.slug,
-    role: membership.role,
+    role: requesterRole,
     createdAt: workspace.createdAt,
     updatedAt: workspace.updatedAt,
   };
 }
 
-export async function updateWorkspace(
-  workspaceId: string,
-  userId: string,
-  name: string,
-): Promise<WorkspaceReply> {
-  const membership = await requireMembership(workspaceId, userId, 'OWNER');
+export async function updateWorkspace(workspaceId: string, name: string): Promise<WorkspaceReply> {
   const workspace = await prisma.workspace.update({ where: { id: workspaceId }, data: { name } });
   return {
     id: workspace.id,
     name: workspace.name,
     slug: workspace.slug,
-    role: membership.role,
+    role: 'OWNER',
     createdAt: workspace.createdAt,
     updatedAt: workspace.updatedAt,
   };
 }
 
-export async function deleteWorkspace(workspaceId: string, userId: string): Promise<void> {
-  await requireMembership(workspaceId, userId, 'OWNER');
+export async function deleteWorkspace(workspaceId: string): Promise<void> {
   // Cascades to memberships, documents (whole trees) and api keys.
   await prisma.workspace.delete({ where: { id: workspaceId } });
 }
 
-export async function listMembers(workspaceId: string, userId: string): Promise<MemberReply[]> {
-  await requireMembership(workspaceId, userId);
+export async function listMembers(workspaceId: string): Promise<MemberReply[]> {
   const memberships = await prisma.workspaceMembership.findMany({
     where: { workspaceId },
     include: { user: { select: { id: true, email: true, name: true } } },
@@ -108,12 +90,9 @@ export async function listMembers(workspaceId: string, userId: string): Promise<
 
 export async function addMember(
   workspaceId: string,
-  requesterId: string,
   email: string,
   role: WorkspaceRole,
 ): Promise<MemberReply> {
-  await requireMembership(workspaceId, requesterId, 'OWNER');
-
   const user = await prisma.user.findUnique({
     where: { email },
     select: { id: true, email: true, name: true },
@@ -143,12 +122,9 @@ export async function addMember(
 
 export async function updateMemberRole(
   workspaceId: string,
-  requesterId: string,
   targetUserId: string,
   role: WorkspaceRole,
 ): Promise<MemberReply> {
-  await requireMembership(workspaceId, requesterId, 'OWNER');
-
   const target = await prisma.workspaceMembership.findUnique({
     where: { workspaceId_userId: { workspaceId, userId: targetUserId } },
     include: { user: { select: { id: true, email: true, name: true } } },
@@ -176,12 +152,11 @@ export async function updateMemberRole(
 
 export async function removeMember(
   workspaceId: string,
-  requesterId: string,
+  requester: WorkspaceMembership,
   targetUserId: string,
 ): Promise<void> {
-  const requester = await requireMembership(workspaceId, requesterId);
   // Any member may leave; removing someone else requires OWNER.
-  if (targetUserId !== requesterId && requester.role !== 'OWNER') {
+  if (targetUserId !== requester.userId && requester.role !== 'OWNER') {
     throw new AppError(403, 'Only owners can remove other members', 'FORBIDDEN');
   }
 
