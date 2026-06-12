@@ -13,6 +13,7 @@ import { authRoutes } from './modules/auth/routes.js';
 import { workspaceRoutes } from './modules/workspaces/routes.js';
 import { documentRoutes } from './modules/documents/routes.js';
 import { apiKeyRoutes } from './modules/api-keys/routes.js';
+import { deliveryRoutes } from './modules/delivery/routes.js';
 
 const PING_TIMEOUT_MS = 1_500;
 
@@ -62,6 +63,7 @@ export async function buildApp() {
 
   app.decorateRequest('user', null);
   app.decorateRequest('membership', null);
+  app.decorateRequest('apiKey', null);
 
   // Liveness + dependency visibility. Always 200 so orchestrators don't kill
   // the process over a flapping dependency; readiness gating can key off the
@@ -75,6 +77,7 @@ export async function buildApp() {
   await app.register(workspaceRoutes, { prefix: '/api/v1/workspaces' });
   await app.register(documentRoutes, { prefix: '/api/v1/workspaces/:workspaceId/documents' });
   await app.register(apiKeyRoutes, { prefix: '/api/v1/workspaces/:workspaceId/api-keys' });
+  await app.register(deliveryRoutes, { prefix: '/api/v1/delivery' });
 
   // Remaining domain modules (documents, api-keys, delivery) register their
   // routes here as they land — see ROADMAP.md.
