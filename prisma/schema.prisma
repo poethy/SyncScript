@@ -1,0 +1,156 @@
+// SyncScript data architecture
+//
+// Multi-tenant model: Workspace is the tenancy boundary. Ownership is expressed
+// exclusively through WorkspaceMembership.role = OWNER (no duplicate ownerId
+// column) so RBAC has a single source of truth.
+//
+// Documents form an arbitrarily deep tree via a parentId self-relation.
+// Sub-tree resolution (used by document-scoped API keys) is done at request
+// time with a recursive CTE and cached in Redis, rather than maintaining a
+// materialized path column — keeps writes simple at the cost of one cached
+// recursive query per scoped read.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum WorkspaceRole {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+model User {
+  id           String  @id @default(cuid())
+  email        String  @unique
+  passwordHash String
+  name         String
+  avatarUrl    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships       WorkspaceMembership[]
+  refreshTokens     RefreshToken[]
+  createdWorkspaces Workspace[]           @relation("WorkspaceCreator")
+  createdDocuments  Document[]            @relation("DocumentCreator")
+  createdApiKeys    ApiKey[]              @relation("ApiKeyCreator")
+}
+
+// Access JWTs are stateless; refresh tokens are persisted (hashed) to support
+// rotation and revocation.
+model RefreshToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Workspace {
+  id          String @id @default(cuid())
+  name        String
+  slug        String @unique
+  // Creator is kept for audit; deleting a user with workspaces is deliberate
+  // (transfer or delete the workspace first).
+  createdById String
+  createdBy   User   @relation("WorkspaceCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships WorkspaceMembership[]
+  documents   Document[]
+  apiKeys     ApiKey[]
+}
+
+model WorkspaceMembership {
+  id          String        @id @default(cuid())
+  workspaceId String
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        WorkspaceRole @default(VIEWER)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model Document {
+  id          String     @id @default(cuid())
+  workspaceId String
+  workspace   Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  // Infinite nesting; deleting a document cascades through its sub-tree.
+  parentId    String?
+  parent      Document?  @relation("DocumentTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children    Document[] @relation("DocumentTree")
+
+  title String  @default("Untitled")
+  icon  String?
+
+  // content is a derived JSON snapshot served by the Delivery API; ydocState
+  // is the Yjs binary update and the CRDT source of truth. Both are written
+  // together by the debounced realtime flusher.
+  content        Json?
+  ydocState      Bytes?
+  // Bumped on every flush; used for optimistic concurrency and as part of the
+  // Redis cache key so stale cache entries are never served.
+  contentVersion Int    @default(0)
+
+  sortOrder  Int     @default(0)
+  isArchived Boolean @default(false)
+
+  createdById String
+  createdBy   User   @relation("DocumentCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  scopedApiKeys ApiKey[]
+
+  @@index([workspaceId, parentId])
+  @@index([parentId])
+  @@index([workspaceId, updatedAt])
+}
+
+// Public Delivery API credentials. Only a SHA-256 hash is stored; the raw key
+// (e.g. ss_live_k3JX9...) is shown once at creation. prefix holds the first
+// characters for identification in dashboards.
+model ApiKey {
+  id      String @id @default(cuid())
+  name    String
+  keyHash String @unique
+  prefix  String
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  // null => key can read the entire workspace; set => key is limited to this
+  // document and its descendants (resolved via recursive CTE, cached).
+  scopeDocumentId String?
+  scopeDocument   Document? @relation(fields: [scopeDocumentId], references: [id], onDelete: Cascade)
+
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+
+  createdById String
+  createdBy   User   @relation("ApiKeyCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId])
+}
