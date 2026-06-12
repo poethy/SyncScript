@@ -31,6 +31,25 @@ async function findInWorkspace(workspaceId: string, documentId: string): Promise
   return doc;
 }
 
+/**
+ * All document ids in the sub-tree rooted at documentId (inclusive), resolved
+ * with a recursive CTE so arbitrarily deep trees cost one round-trip. Also
+ * used for move-cycle prevention here and by document-scoped API key
+ * authorization in the delivery module (where results are cached in Redis).
+ */
+export async function getSubtreeIds(documentId: string): Promise<string[]> {
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    WITH RECURSIVE subtree AS (
+      SELECT id FROM "Document" WHERE id = ${documentId}
+      UNION ALL
+      SELECT d.id FROM "Document" d
+      JOIN subtree s ON d."parentId" = s.id
+    )
+    SELECT id FROM subtree
+  `;
+  return rows.map((row) => row.id);
+}
+
 // Prevent cycles when re-parenting: the new parent must exist in the same
 // workspace and must not be the document itself or any of its descendants.
 async function assertValidMove(
@@ -39,29 +58,38 @@ async function assertValidMove(
   newParentId: string | null,
 ): Promise<void> {
   if (newParentId === null) return;
-  if (newParentId === documentId) {
-    throw new AppError(400, 'A document cannot be nested under itself', 'CIRCULAR_NESTING');
-  }
 
-  let current = await prisma.document.findFirst({
+  const parent = await prisma.document.findFirst({
     where: { id: newParentId, workspaceId },
-    select: { parentId: true },
+    select: { id: true },
   });
-  if (!current) {
+  if (!parent) {
     throw new AppError(404, 'Parent document not found in this workspace', 'PARENT_NOT_FOUND');
   }
 
-  // Walk up the ancestor chain from the new parent; hitting the document
-  // being moved means the target is inside its own sub-tree.
-  while (current.parentId) {
-    if (current.parentId === documentId) {
-      throw new AppError(400, 'Cannot move a document under its own descendant', 'CIRCULAR_NESTING');
-    }
-    current = await prisma.document.findUniqueOrThrow({
-      where: { id: current.parentId },
-      select: { parentId: true },
-    });
+  const subtreeIds = await getSubtreeIds(documentId);
+  if (subtreeIds.includes(newParentId)) {
+    throw new AppError(400, 'Cannot move a document into its own sub-tree', 'CIRCULAR_NESTING');
   }
+}
+
+export async function getSubtree(
+  workspaceId: string,
+  documentId: string,
+  includeArchived: boolean,
+): Promise<DocumentTreeNode> {
+  await findInWorkspace(workspaceId, documentId);
+  const ids = await getSubtreeIds(documentId);
+  const docs = await prisma.document.findMany({
+    where: { id: { in: ids }, ...(includeArchived ? {} : { isArchived: false }) },
+    orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+  });
+  const root = assembleTree(docs, (d) => d.id === documentId).find((n) => n.id === documentId);
+  if (!root) {
+    // Root exists but is archived and archived docs were excluded.
+    throw new AppError(404, 'Document not found', 'DOCUMENT_NOT_FOUND');
+  }
+  return root;
 }
 
 export async function createDocument(

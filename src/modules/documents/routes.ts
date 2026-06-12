@@ -6,6 +6,7 @@ import {
   documentDetailReply,
   documentParams,
   documentReply,
+  documentTreeNode,
   documentTreeReply,
   listDocumentsQuery,
   updateDocumentBody,
@@ -58,6 +59,24 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
     },
     async (request) =>
       documentService.getDocument(request.params.workspaceId, request.params.documentId),
+  );
+
+  app.get(
+    '/:documentId/subtree',
+    {
+      preHandler: [requireWorkspaceRole('VIEWER')],
+      schema: {
+        params: documentParams,
+        querystring: listDocumentsQuery,
+        response: { 200: documentTreeNode },
+      },
+    },
+    async (request) =>
+      documentService.getSubtree(
+        request.params.workspaceId,
+        request.params.documentId,
+        request.query.includeArchived,
+      ),
   );
 
   app.patch(
