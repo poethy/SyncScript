@@ -5,6 +5,7 @@ import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
 import { verifyAccessToken } from '../modules/auth/tokens.js';
 import { DocSessionManager } from './docSession.js';
+import { DebouncedFlusher } from './persistence.js';
 import {
   docJoinPayload,
   docLeavePayload,
@@ -48,9 +49,10 @@ export function attachRealtimeGateway(httpServer: HttpServer): RealtimeServer {
     maxHttpBufferSize: 2 * 1024 * 1024,
   });
 
-  // Teardown becomes the debounced flusher's final flush in the persistence
-  // layer; until then sessions are simply discarded when the room empties.
-  const sessions = new DocSessionManager(() => Promise.resolve());
+  const flusher = new DebouncedFlusher();
+  // When the last client leaves a document, flush immediately before the
+  // session is destroyed — nothing dirty ever waits on an empty room.
+  const sessions = new DocSessionManager((session) => flusher.flush(session));
 
   // JWT handshake: clients pass their access token as `auth.token` when
   // connecting; unauthenticated sockets never reach the connection handler.
@@ -76,7 +78,7 @@ export function attachRealtimeGateway(httpServer: HttpServer): RealtimeServer {
     socket.on('doc:join', (raw, ack) => void handleJoin(io, socket, sessions, raw, ack));
     socket.on('doc:leave', (raw, ack) => void handleLeave(io, socket, sessions, raw, ack));
     socket.on('doc:sync', (raw, ack) => void handleSync(socket, sessions, raw, ack));
-    socket.on('doc:update', (raw, ack) => void handleUpdate(socket, sessions, raw, ack));
+    socket.on('doc:update', (raw, ack) => void handleUpdate(socket, sessions, flusher, raw, ack));
 
     // 'disconnecting' (not 'disconnect') so the socket's rooms are still known.
     socket.on('disconnecting', () => {
@@ -198,6 +200,7 @@ async function handleSync(
 async function handleUpdate(
   socket: RealtimeSocket,
   sessions: DocSessionManager,
+  flusher: DebouncedFlusher,
   raw: unknown,
   ack?: (result: Ack) => void,
 ): Promise<void> {
@@ -232,6 +235,7 @@ async function handleUpdate(
   }
 
   session.dirty = true;
+  flusher.schedule(session);
   socket.to(docRoom(documentId)).emit('doc:update', { documentId, update });
   ack?.({ ok: true });
 }
