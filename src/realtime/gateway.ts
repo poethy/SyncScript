@@ -7,6 +7,7 @@ import { verifyAccessToken } from '../modules/auth/tokens.js';
 import { DocSessionManager } from './docSession.js';
 import { DebouncedFlusher } from './persistence.js';
 import { publishDocUpdate, subscribeDocUpdates } from './pubsub.js';
+import { evictDocument } from '../modules/delivery/cache.js';
 import {
   docJoinPayload,
   docLeavePayload,
@@ -51,6 +52,10 @@ export function attachRealtimeGateway(httpServer: HttpServer): RealtimeServer {
   });
 
   const flusher = new DebouncedFlusher();
+  // Most document writes originate here, not in REST — every flush evicts the
+  // delivery cache so external consumers never read a stale snapshot. The
+  // cache is in shared Redis, so one eviction covers all instances.
+  flusher.onFlush((documentId) => void evictDocument(documentId));
   // When the last client leaves a document, flush immediately before the
   // session is destroyed — nothing dirty ever waits on an empty room.
   const sessions = new DocSessionManager((session) => flusher.flush(session));

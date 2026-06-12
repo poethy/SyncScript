@@ -16,3 +16,7 @@ export const deliveryDocumentReply = z.object({
 });
 
 export type DeliveryDocumentReply = z.infer<typeof deliveryDocumentReply>;
+
+/** Internal shape carried through the cache; the response schema strips
+ * workspaceId before it reaches consumers. */
+export type DeliveryDocument = DeliveryDocumentReply & { workspaceId: string };
