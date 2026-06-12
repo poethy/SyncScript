@@ -14,7 +14,11 @@ declare module 'fastify' {
   }
 }
 
-export function authenticate(request: FastifyRequest): void {
+// Must be async even though the body is synchronous: fastify treats a hook
+// that does not return a promise as callback-style and waits forever for a
+// `done` callback that is never invoked.
+// eslint-disable-next-line @typescript-eslint/require-await
+export async function authenticate(request: FastifyRequest): Promise<void> {
   const header = request.headers.authorization;
   if (!header?.startsWith('Bearer ')) {
     throw new AppError(401, 'Missing bearer token', 'UNAUTHORIZED');
