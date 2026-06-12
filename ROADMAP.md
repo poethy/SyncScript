@@ -66,7 +66,7 @@ flowchart LR
 3. `feat(core): bootstrap fastify app with env validation, logging and health check`
 4. `docs: add architecture roadmap`
 
-### Phase 1 — Auth & Tenancy
+### Phase 1 — Auth & Tenancy ✅
 5. `feat(auth): user registration and login with argon2 and jwt`
 6. `feat(auth): refresh token rotation and authenticate middleware`
 7. `feat(workspaces): workspace crud with membership management`
