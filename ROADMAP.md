@@ -76,7 +76,7 @@ flowchart LR
 9. `feat(documents): nested document crud with tree queries`
 10. `feat(documents): sub-tree resolution via recursive cte`
 
-### Phase 3 — Realtime
+### Phase 3 — Realtime ✅
 11. `feat(realtime): socket.io gateway with jwt handshake and document rooms`
 12. `feat(realtime): yjs crdt sync protocol over socket.io`
 13. `feat(realtime): debounced postgres persistence with snapshot derivation`
